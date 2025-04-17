@@ -1,5 +1,6 @@
 import os
 import uuid
+import asyncio
 
 import websockets
 from fastrtc import (ReplyOnPause, Stream, get_stt_model,
@@ -20,8 +21,8 @@ telnyx.public_key = os.environ.get("TELNYX_PUBLIC_KEY")
 MESSAGING_PROFILE = os.environ.get("MESSAGING_PROFILE")
 PHONE_NUMBER = os.environ.get("PHONE_NUMBER")
 SERVER_ADDRESS = os.environ.get("SERVER_ADDRESS")
-WEBSOCKET_SERVER = os.environ.get(f"wss://{SERVER_ADDRESS}/ws")
-FASTRTC_SERVER = os.environ.get(f"https://{SERVER_ADDRESS}/websocket/offer")
+WEBSOCKET_SERVER = f"wss://{SERVER_ADDRESS}/ws"
+FASTRTC_SERVER = f"wss://{SERVER_ADDRESS}/websocket/offer"
 MODEL = os.environ.get("MODEL")
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL")
 
@@ -45,9 +46,11 @@ def agent(user_message):
 
 def talk(audio):
     prompt = stt_model.stt(audio)
+    print(f"{prompt=}")
     user_message = {"role": "user", "content": prompt}
     yield AdditionalOutputs(user_message)
     ai_message = agent(user_message)
+    print(f"{ai_message['content']=}")
     yield AdditionalOutputs(ai_message)
     yield AdditionalOutputs({"role": "speech", "state": "starting"})
     for audio_chunk in tts_model.stream_tts_sync(ai_message["content"]):
@@ -149,8 +152,11 @@ async def hooks(request: Request, response: Response):
             encoded_client_state = base64.b64encode(
                 direction.encode("ascii"))
             client_state_str = str(encoded_client_state, 'utf-8')
+            print(f"{WEBSOCKET_SERVER=}")
             resp = call.answer(client_state=client_state_str,
-                               stream_url=WEBSOCKET_SERVER, stream_track="both_tracks")
+                               stream_url=WEBSOCKET_SERVER,
+                               stream_track="both_tracks",
+                               send_silence_when_idle=True)
             print(f"{resp=}")
 
     response.status_code = 200
@@ -159,20 +165,42 @@ async def hooks(request: Request, response: Response):
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
+    print("Websocket connection established")
     await websocket.accept()
     try:
         async with websockets.connect(FASTRTC_SERVER) as rtc:
             websocket_id = str(uuid.uuid4())
-            await rtc.send_json({"event": "start", "websocket_id": websocket_id})
+            print(f"{websocket_id=}")
+            await rtc.send(json.dumps({"event": "start", "websocket_id": websocket_id}))
 
+            async def receive_rtc_messsages():
+                async for message in rtc:
+                    try:
+                        response = json.loads(message)
+                        print(f"{response=}")
+                    except Exception as e:
+                        print("Error processing FastRTC response:",
+                              e, "Raw message:", message)
+
+            async def receive_ws_messages():
+                stop = False
+                while not stop:
+                    data = await websocket.receive_text()
+                    message = json.loads(data)
+                    # print(f"WebSocket: {data=}")
+                    event_type = message["event"]
+                    if event_type == "media":
+                        # print("Sending to server...")
+                        await rtc.send(data)
+                    elif event_type == "start":
+                        stream_sid = message["stream_id"]
+                        print(f"Incoming stream has started: {stream_sid}")
+                    else:
+                        print(f"Received non-media event: {event_type}")
+                    stop = "stop" == "event_type"
+            await asyncio.gather(receive_rtc_messsages(), receive_ws_messages())
     except WebSocketDisconnect:
         print("Call disconnected")
     except Exception as e:
         print("WebSocket error: ", e)
-    stop = False
-    while not stop:
-        data = await websocket.receive_text()
-        event = json.loads(data)
-        print(f"WebSocket: {data=}")
-        stop = "stop" in event
 # uvicorn app:app --host 0.0.0.0 --port 8000
