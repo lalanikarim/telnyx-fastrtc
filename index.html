@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>FreeRTC + LangChain AI Voice Chat</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+
+
+<div class="container full-height">
+
+
+    <div id="messagesContainer">
+        <div class="chat-container">
+            <div class="user-bar">
+                <div class="name d-flex">FreeRTC + LangChain AI Voice Chat</div>
+
+                <div class="d-flex" style="float: right;">
+                </div>
+            </div>
+            <div class="conversation">
+                <div class="conversation-container"></div>
+                <div class="status">
+                    <div>
+                        WebRTC Connection State: <span id="connectionStatus"></span>
+                    </div>
+                </div>
+                <div class="conversation-compose">
+                    <div class="emoji">
+                        <button id="power" type="button" class="btn btn-link text-success">
+                            <i class="fa-solid fa-power-off"></i>
+                        </button>
+                    </div>
+                    <div class="input-msg">
+
+                        <div class="wave d-none">
+                            <ul>
+                                <li></li>
+                                <li></li>
+                                <li></li>
+                                <li></li>
+                                <li></li>
+                                <li></li>
+                                <li></li>
+                                <li></li>
+                                <li></li>
+                                <li></li>
+                                <li></li>
+                                <li></li>
+                                <li></li>
+                                <li></li>
+                                <li></li>
+                            </ul>
+                        </div>
+                        <div class="d-flex justify-content-center py-2">
+                            <div class="processing d-none"></div>
+                        </div>
+                    </div>
+                    <div class="send">
+                        <div class="circle start" onclick="start()">
+                            <i class="fa-solid fa-microphone"></i>
+                        </div>
+                        <div class="circle stop d-none" onclick="stop()">
+                            <i class="fa-solid fa-microphone-slash"></i>
+                        </div>
+                        <div class="circle wait d-none">
+                            <i class="fa-solid fa-hourglass-half"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+
+
+
+</div>
+
+<div id="media">
+    <audio id="remoteAudio" autoplay="autoplay"></audio>
+</div>
+<div class="option d-none">
+    <input id="use-stun" type="checkbox" checked/>
+    <label for="use-stun">Use STUN server</label>
+</div>
+<div class="file d-none">
+    <input type="file" />
+</div>
+<script src="/static/client.js"></script>
+</body>
+</html>
