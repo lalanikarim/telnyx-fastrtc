@@ -1,4 +1,5 @@
 import os
+import uuid
 
 import websockets
 from fastrtc import (ReplyOnPause, Stream, get_stt_model,
@@ -20,7 +21,7 @@ MESSAGING_PROFILE = os.environ.get("MESSAGING_PROFILE")
 PHONE_NUMBER = os.environ.get("PHONE_NUMBER")
 SERVER_ADDRESS = os.environ.get("SERVER_ADDRESS")
 WEBSOCKET_SERVER = os.environ.get(f"wss://{SERVER_ADDRESS}/ws")
-FASTRTC_SERVER = os.environ.get(f"https://{SERVER_ADDRESS}/webrtc/offer")
+FASTRTC_SERVER = os.environ.get(f"https://{SERVER_ADDRESS}/websocket/offer")
 MODEL = os.environ.get("MODEL")
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL")
 
@@ -49,12 +50,24 @@ def talk(audio):
     ai_message = agent(user_message)
     yield AdditionalOutputs(ai_message)
     yield AdditionalOutputs({"role": "speech", "state": "starting"})
-    for audio_chunk in tts_model.stream_tts_sync(prompt):
+    for audio_chunk in tts_model.stream_tts_sync(ai_message["content"]):
         yield audio_chunk
     yield AdditionalOutputs({"role": "speech", "state": "completed"})
 
 
-stream = Stream(ReplyOnPause(talk), modality="audio", mode="send-receive")
+def startup():
+    prompt = "Hi! I am an AI Agent. How can I help you?"
+    ai_message = {"role": "ai", "content": prompt}
+    chat_history.append(ai_message)
+    yield AdditionalOutputs(ai_message)
+    yield AdditionalOutputs({"role": "speech", "state": "starting"})
+    for chunk in tts_model.stream_tts_sync(prompt):
+        yield chunk
+    yield AdditionalOutputs({"role": "speech", "state": "completed"})
+
+
+stream = Stream(ReplyOnPause(talk, startup_fn=startup),
+                modality="audio", mode="send-receive")
 app = FastAPI()
 app.mount("/static", StaticFiles(directory="static"), name="static")
 stream.mount(app)
@@ -148,9 +161,10 @@ async def hooks(request: Request, response: Response):
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     try:
-        async with websockets.connect(FASTRTC_SERVER) as server:
+        async with websockets.connect(FASTRTC_SERVER) as rtc:
+            websocket_id = str(uuid.uuid4())
+            await rtc.send_json({"event": "start", "websocket_id": websocket_id})
 
-            pass
     except WebSocketDisconnect:
         print("Call disconnected")
     except Exception as e:
