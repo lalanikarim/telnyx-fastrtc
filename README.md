@@ -1,4 +1,4 @@
-# AI Chatbot and Phonebot Demo with Telnyx/FastRTC
+# AI Chatbot and Phone Agent Demo with Telnyx/FastRTC
 
 ## Overview
 This is a proof-of-concept (POC) project integrating **Telnyx** with **FastRTC** to build a real-time voice chat application powered by AI. The project leverages WebRTC for real-time audio communication and LangChain for AI-driven conversational capabilities. In addition to AI-powered voice chat via the web interface, the project also supports phone-based interactions. Users can call the AI agent and have real-time conversations over the phone.
