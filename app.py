@@ -2,8 +2,6 @@ import os
 import uuid
 import asyncio
 
-import requests
-
 import websockets
 from fastrtc import (ReplyOnPause, Stream, get_stt_model,
                      get_tts_model, AdditionalOutputs)
@@ -186,6 +184,50 @@ async def hooks(request: Request, response: Response):
     return ""
 
 
+async def receive_rtc_messages(websocket_id, fastrtc_ws, websocket):
+    async for message in fastrtc_ws:
+        try:
+            response = json.loads(message)
+            if "event" in response:
+                if response["event"] == "media":
+                    await websocket.send_text(message)
+            else:
+                print(f"From FreeRTC: {message=}")
+                if response["type"] == "send_input":
+                    async with aiohttp.ClientSession() as session:
+                        await session.post(
+                            f"https://{SERVER_ADDRESS}/input_hook",
+                            json={
+                                "webrtc_id": websocket_id,
+                                "sample_rate": 8000
+                            }
+                        )
+        except Exception as _e:
+            print(f"""
+            Error processing FastRTC response: {str(_e)},
+            Raw message: {message}""")
+
+
+async def receive_ws_messages(fastrtc_ws, websocket):
+    stop = False
+    while not stop:
+        data = await websocket.receive_text()
+        message = json.loads(data)
+        # print(f"WebSocket: {data=}")
+        event_type = message["event"]
+        if event_type != "media":
+            print(f"From Telnyx: {message=}")
+        if event_type == "media":
+            # print("Sending to server...")
+            await fastrtc_ws.send(data)
+        elif event_type == "start":
+            stream_sid = message["stream_id"]
+            print(f"Incoming stream has started: {stream_sid}")
+        else:
+            print(f"Received non-media event: {event_type}")
+        stop = "stop" == "event_type"
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     print("Websocket connection established")
@@ -193,53 +235,20 @@ async def websocket_endpoint(websocket: WebSocket):
     websocket_id = str(uuid.uuid4())
     print(f"{websocket_id=}")
     try:
-        async with websockets.connect(FASTRTC_SERVER) as rtc:
-            await rtc.send(json.dumps({"event": "start", "websocket_id": websocket_id}))
+        async with websockets.connect(FASTRTC_SERVER) as fastrtc_ws:
+            await fastrtc_ws.send(
+                json.dumps(
+                    {
+                        "event": "start",
+                        "websocket_id": websocket_id
+                    }
+                )
+            )
 
-            async def receive_rtc_messages():
-                async for message in rtc:
-                    try:
-                        response = json.loads(message)
-                        if "event" in response:
-                            if response["event"] == "media":
-                                await websocket.send_text(message)
-                        else:
-                            print(f"From FreeRTC: {message=}")
-                            if response["type"] == "send_input":
-                                async with aiohttp.ClientSession() as session:
-                                    resp = await session.post(
-                                        f"https://{SERVER_ADDRESS}/input_hook",
-                                        json={
-                                            "webrtc_id": websocket_id,
-                                            "sample_rate": 8000
-                                        }
-                                    )
-                                    print(f"{resp=}")
-                    except Exception as _e:
-                        print(f"""
-                        Error processing FastRTC response: {str(_e)},
-                        Raw message: {message}""")
-
-            async def receive_ws_messages():
-                stop = False
-                while not stop:
-                    data = await websocket.receive_text()
-                    message = json.loads(data)
-                    # print(f"WebSocket: {data=}")
-                    event_type = message["event"]
-                    if event_type != "media":
-                        print(f"From Telnyx: {message=}")
-                    if event_type == "media":
-                        # print("Sending to server...")
-                        await rtc.send(data)
-                    elif event_type == "start":
-                        stream_sid = message["stream_id"]
-                        print(f"Incoming stream has started: {stream_sid}")
-                    else:
-                        print(f"Received non-media event: {event_type}")
-                    stop = "stop" == "event_type"
-            await asyncio.gather(receive_ws_messages(),
-                                 receive_rtc_messages())
+            await asyncio.gather(
+                receive_ws_messages(fastrtc_ws, websocket),
+                receive_rtc_messages(websocket_id, fastrtc_ws, websocket)
+            )
     except WebSocketDisconnect:
         print("Call disconnected")
     except Exception as e:
