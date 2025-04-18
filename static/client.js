@@ -15,6 +15,7 @@ let cameraImg = document.querySelector("div.photo i");
 let fileInput = document.querySelector("div.file input[type=file]");
 let pc;
 let dc;
+let webrtc_id;
 
 function getcconnectionstatus() {
     let status = "closed";
@@ -28,7 +29,7 @@ async function negotiate() {
     //pc.addTransceiver('audio', { direction: 'sendrecv' });
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
-    let webrtc_id = Math.random().toString(36).substring(7);
+    webrtc_id = Math.random().toString(36).substring(7);
 
     // Send ICE candidates to server
     // (especially needed when server is behind firewall)
@@ -106,7 +107,7 @@ async function start() {
         console.log("Data channel is open and ready to use");
         dc.send("Hello server");
     };
-    dc.onmessage = (ev) => {
+    dc.onmessage = async (ev) => {
         console.log("Received message: " + ev.data);
         eventJson = JSON.parse(ev.data);
         if (eventJson.type === "log") {
@@ -120,6 +121,19 @@ async function start() {
                 hideElement(processing);
                 showElement(wave);
             }
+        } else if (eventJson.type === "send_input") {
+            console.log("Sending input");
+            resp = await fetch("/input_hook", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                    webrtc_id: webrtc_id,
+                    sample_rate: 24000,
+                }),
+            });
+            console.log(resp);
         }
     };
     dc.onclose = () => {
@@ -213,7 +227,6 @@ function stop() {
 async function handleSuccess(stream) {
     const tracks = stream.getAudioTracks();
     console.log("Received: ", tracks.length, " tracks");
-    stream = stream;
     stream.getAudioTracks().forEach((track) => {
         pc.addTrack(track);
     });

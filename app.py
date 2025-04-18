@@ -2,6 +2,8 @@ import os
 import uuid
 import asyncio
 
+import requests
+
 import websockets
 from fastrtc import (ReplyOnPause, Stream, get_stt_model,
                      get_tts_model, AdditionalOutputs)
@@ -14,6 +16,9 @@ import json
 import telnyx
 from telnyx import Event, Call, Message
 import base64
+import librosa
+from pydantic import BaseModel
+import aiohttp
 
 load_dotenv()
 telnyx.api_key = os.environ.get("TELNYX_API_KEY")
@@ -25,6 +30,12 @@ WEBSOCKET_SERVER = f"wss://{SERVER_ADDRESS}/ws"
 FASTRTC_SERVER = f"wss://{SERVER_ADDRESS}/websocket/offer"
 MODEL = os.environ.get("MODEL")
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL")
+
+
+class InputData(BaseModel):
+    webrtc_id: str
+    sample_rate: int = 24000
+
 
 llm = init_chat_model(
     model=MODEL, base_url=OLLAMA_BASE_URL
@@ -44,7 +55,7 @@ def agent(user_message):
     return ai_message
 
 
-def talk(audio):
+def talk(audio, target_sr: int = 24000):
     prompt = stt_model.stt(audio)
     print(f"{prompt=}")
     user_message = {"role": "user", "content": prompt}
@@ -54,7 +65,13 @@ def talk(audio):
     yield AdditionalOutputs(ai_message)
     yield AdditionalOutputs({"role": "speech", "state": "starting"})
     for audio_chunk in tts_model.stream_tts_sync(ai_message["content"]):
-        yield audio_chunk
+        orig_sr, audio = audio_chunk
+        if orig_sr == target_sr:
+            yield audio_chunk
+        else:
+            down_sampled = librosa.resample(
+                audio, orig_sr=orig_sr, target_sr=target_sr)
+            yield target_sr, down_sampled
     yield AdditionalOutputs({"role": "speech", "state": "completed"})
 
 
@@ -69,7 +86,7 @@ def startup():
     yield AdditionalOutputs({"role": "speech", "state": "completed"})
 
 
-stream = Stream(ReplyOnPause(talk, startup_fn=startup),
+stream = Stream(ReplyOnPause(talk),  # startup_fn=startup),
                 modality="audio", mode="send-receive")
 app = FastAPI()
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -81,6 +98,12 @@ stream.mount(app)
 @app.get("/")
 async def _():
     return HTMLResponse(content=open("index.html").read())
+
+
+@app.post("/input_hook")
+def input_hook(data: InputData):
+    print(f"Input Hook: {data=}")
+    stream.set_input(data.webrtc_id, data.sample_rate)
 
 
 @app.get("/outputs")
@@ -155,8 +178,8 @@ async def hooks(request: Request, response: Response):
             print(f"{WEBSOCKET_SERVER=}")
             resp = call.answer(client_state=client_state_str,
                                stream_url=WEBSOCKET_SERVER,
-                               stream_track="both_tracks",
-                               send_silence_when_idle=True)
+                               stream_bidirectional_mode="rtp",
+                               stream_track="inbound_track")
             print(f"{resp=}")
 
     response.status_code = 200
@@ -167,20 +190,35 @@ async def hooks(request: Request, response: Response):
 async def websocket_endpoint(websocket: WebSocket):
     print("Websocket connection established")
     await websocket.accept()
+    websocket_id = str(uuid.uuid4())
+    print(f"{websocket_id=}")
     try:
         async with websockets.connect(FASTRTC_SERVER) as rtc:
-            websocket_id = str(uuid.uuid4())
-            print(f"{websocket_id=}")
             await rtc.send(json.dumps({"event": "start", "websocket_id": websocket_id}))
 
-            async def receive_rtc_messsages():
+            async def receive_rtc_messages():
                 async for message in rtc:
                     try:
                         response = json.loads(message)
-                        print(f"{response=}")
-                    except Exception as e:
-                        print("Error processing FastRTC response:",
-                              e, "Raw message:", message)
+                        if "event" in response:
+                            if response["event"] == "media":
+                                await websocket.send_text(message)
+                        else:
+                            print(f"From FreeRTC: {message=}")
+                            if response["type"] == "send_input":
+                                async with aiohttp.ClientSession() as session:
+                                    resp = await session.post(
+                                        f"https://{SERVER_ADDRESS}/input_hook",
+                                        json={
+                                            "webrtc_id": websocket_id,
+                                            "sample_rate": 8000
+                                        }
+                                    )
+                                    print(f"{resp=}")
+                    except Exception as _e:
+                        print(f"""
+                        Error processing FastRTC response: {str(_e)},
+                        Raw message: {message}""")
 
             async def receive_ws_messages():
                 stop = False
@@ -189,6 +227,8 @@ async def websocket_endpoint(websocket: WebSocket):
                     message = json.loads(data)
                     # print(f"WebSocket: {data=}")
                     event_type = message["event"]
+                    if event_type != "media":
+                        print(f"From Telnyx: {message=}")
                     if event_type == "media":
                         # print("Sending to server...")
                         await rtc.send(data)
@@ -198,7 +238,8 @@ async def websocket_endpoint(websocket: WebSocket):
                     else:
                         print(f"Received non-media event: {event_type}")
                     stop = "stop" == "event_type"
-            await asyncio.gather(receive_rtc_messsages(), receive_ws_messages())
+            await asyncio.gather(receive_ws_messages(),
+                                 receive_rtc_messages())
     except WebSocketDisconnect:
         print("Call disconnected")
     except Exception as e:
