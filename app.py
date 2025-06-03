@@ -17,6 +17,7 @@ import base64
 import librosa
 from pydantic import BaseModel
 import aiohttp
+import time
 
 load_dotenv()
 telnyx.api_key = os.environ.get("TELNYX_API_KEY")
@@ -67,25 +68,34 @@ def talk(audio, target_sr: int = 24000):
         if orig_sr == target_sr:
             yield audio_chunk
         else:
-            down_sampled = librosa.resample(
+            re_sampled = librosa.resample(
                 audio, orig_sr=orig_sr, target_sr=target_sr)
-            yield target_sr, down_sampled
+            yield target_sr, re_sampled
     yield AdditionalOutputs({"role": "speech", "state": "completed"})
 
 
-def startup():
+def startup(target_sr: int = 16000):
+    print("Running Startup")
     prompt = "Hi! I am an AI Agent. How can I help you?"
     ai_message = {"role": "ai", "content": prompt}
     chat_history.append(ai_message)
     yield AdditionalOutputs(ai_message)
     yield AdditionalOutputs({"role": "speech", "state": "starting"})
-    for chunk in tts_model.stream_tts_sync(prompt):
-        yield chunk
+    for audio_chunk in tts_model.stream_tts_sync(prompt):
+        orig_sr, audio = audio_chunk
+        if orig_sr == target_sr:
+            yield audio_chunk
+        else:
+            re_sampled = librosa.resample(
+                audio, orig_sr=orig_sr, target_sr=target_sr)
+            yield target_sr, re_sampled
     yield AdditionalOutputs({"role": "speech", "state": "completed"})
 
 
-stream = Stream(ReplyOnPause(talk),  # startup_fn=startup),
-                modality="audio", mode="send-receive")
+stream = Stream(
+    ReplyOnPause(talk, input_sample_rate=8000,
+                 output_sample_rate=8000, startup_fn=startup),
+    modality="audio", mode="send-receive")
 app = FastAPI()
 app.mount("/static", StaticFiles(directory="static"), name="static")
 stream.mount(app)
@@ -156,10 +166,17 @@ async def hooks(request: Request, response: Response):
             to=to_address,
             text=f"Hello, World! {text}",
             subject="From Telnyx!",
+            use_profile_webhooks=False,
             type="SMS"
         )
         print(f"{resp=}")
+    if event.event_type == "message.sent":
+        print(f"{event=}")
+    if event.event_type == "message.finalized":
+        print(f"{event=}")
+
     if event.event_type == "call.initiated":
+        time.sleep(5)
         call = Call()
         call_control_id = event.payload["call_control_id"]
         # print(f"{call=}")
@@ -215,6 +232,7 @@ async def receive_ws_messages(fastrtc_ws, websocket):
         message = json.loads(data)
         # print(f"WebSocket: {data=}")
         event_type = message["event"]
+        # print(f"WebSocket: {event_type=}")
         if event_type != "media":
             print(f"From Telnyx: {message=}")
         if event_type == "media":
